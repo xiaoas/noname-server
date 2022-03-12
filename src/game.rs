@@ -1,25 +1,26 @@
-use std::{sync::{Arc, Weak}, collections::{HashSet, HashMap}};
-use serde::{Serialize, Deserialize};
-use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 use salvo::extra::ws::Message;
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 pub use handlers::MessageHandleError;
 pub struct Client {
     pub tx: mpsc::UnboundedSender<Result<Message, salvo::Error>>,
     /// key given when init
-    /// also used as room key 
+    /// also used as room key
     pub key: String,
     pub nick_name: String,
     pub avatar: String,
     pub status: String,
     room: JoinedRoom,
 }
-pub enum JoinedRoom { // implement -> Option<RwLock<Room>> ?
+pub enum JoinedRoom {
+    // implement -> Option<RwLock<Room>> ?
     None,
     Guest(String),
-    Owner(Room)
+    Owner(Room),
 }
 impl Client {
     pub fn new(tx: mpsc::UnboundedSender<Result<Message, salvo::Error>>) -> Self {
@@ -44,7 +45,7 @@ impl Client {
                     None
                 }
             }
-            JoinedRoom::Owner(room) => Some(&room)
+            JoinedRoom::Owner(room) => Some(&room),
         }
     }
     pub fn send(&self, msg: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -57,7 +58,7 @@ impl Client {
 pub struct Room {
     pub config: RoomConfig,
     // maybe not
-    // members: HashSet<String>, 
+    // members: HashSet<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -72,28 +73,42 @@ pub async fn handle_message(id: &str, msg: Value) -> Result<(), MessageHandleErr
     match msg {
         Value::Array(args) => {
             if let Some(Value::String(cmd)) = args.get(0) {
-                if cmd == "heartbeat" { // we don't need heartbeat anymore
-                    return Ok(())
+                if cmd == "heartbeat" {
+                    // we don't need heartbeat anymore
+                    return Ok(());
                 }
                 if cmd == "key" {
-                    return handlers::key(id, &args[1..]).await;
+                    return handlers::key(id, args).await;
                 }
-                 // check key
-                if super::ONLINE_CLIENTS.read().await.get(id).unwrap().key == "" {
+                // check key
+                if crate::ONLINE_CLIENTS
+                    .read()
+                    .await
+                    .get(id)
+                    .unwrap()
+                    .key
+                    .is_empty()
+                {
                     return Err(MessageHandleError::Unauthorized);
                 }
-                
+
                 todo!()
             } else {
-                Err(MessageHandleError::InvalidMessageFormat("message command is expected".to_string()))
+                Err(MessageHandleError::InvalidMessageFormat(
+                    "message command is expected".to_string(),
+                ))
             }
-        },
-        _ => Err(MessageHandleError::InvalidMessageFormat("Top level Array is expected".to_string())),
+        }
+        _ => Err(MessageHandleError::InvalidMessageFormat(
+            "Top level Array is expected".to_string(),
+        )),
     }
 }
 
 mod handlers {
+    use serde::{Deserialize, Serialize};
     use serde_json::Value;
+    use thiserror::Error;
 
     #[derive(Error, Debug)]
     pub enum MessageHandleError {
@@ -102,7 +117,21 @@ mod handlers {
         #[error("client is not allowed to send this command")]
         Unauthorized,
     }
-    pub async fn key(id: &str, args: &[Value]) -> Result<(), super::MessageHandleError> {
-        todo!()
+    pub async fn key(id: &str, mut args: Vec<Value>) -> Result<(), MessageHandleError> {
+        #[derive(Deserialize)]
+        struct Arg1([String; 2]);
+
+        if args.len() == 2 {
+            let arg1 = args.pop().unwrap();
+            let Arg1([key, version]) = serde_json::from_value(arg1)
+                .map_err(|err| MessageHandleError::InvalidMessageFormat(err.to_string()))?;
+            // TODO: we have not yet seen the proto's version checking code, so version will not be used
+            // TODO: validate the given key against db
+            crate::ONLINE_CLIENTS.write().await.get_mut(id).unwrap().key = key;
+            return Ok(());
+        }
+        Err(MessageHandleError::InvalidMessageFormat(
+            "invalid key args".to_string(),
+        ))
     }
 }

@@ -1,8 +1,7 @@
 pub mod game;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use futures_util::{FutureExt, StreamExt, SinkExt};
+use futures_util::{FutureExt, StreamExt};
 use once_cell::sync::Lazy;
 use rand::distributions::{Distribution, Uniform};
 use serde_json::json;
@@ -16,14 +15,14 @@ use salvo::prelude::*;
 type Clients = RwLock<HashMap<String, game::Client>>;
 
 static ONLINE_CLIENTS: Lazy<Clients> = Lazy::new(|| Clients::default());
-static ID_SAMPLE_RANGE: Lazy<Uniform<usize>> = Lazy::new(|| Uniform::from(1_000_000_000..10_000_000_000));
+static ID_SAMPLE_RANGE: Lazy<Uniform<usize>> =
+    Lazy::new(|| Uniform::from(1_000_000_000..10_000_000_000));
 
 #[fn_handler]
 pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(), HttpError> {
     let fut = WsHandler::new().handle(req, res)?;
     let fut = async move {
         if let Some(ws) = fut.await {
-            
             // know what, we'll use the same algorithm from the proto to generate id
             let my_id = ID_SAMPLE_RANGE.sample(&mut rand::rngs::OsRng);
             let my_id = my_id.to_string();
@@ -42,7 +41,10 @@ pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(
                 }
             }));
             let fut = async move {
-                ONLINE_CLIENTS.write().await.insert(my_id.clone(), game::Client::new(tx));
+                ONLINE_CLIENTS
+                    .write()
+                    .await
+                    .insert(my_id.clone(), game::Client::new(tx));
                 if let Err(error) = client_welcome(&my_id).await {
                     tracing::warn!(?my_id, ?error, "client welcome error");
                     return;
@@ -74,7 +76,7 @@ pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(
 /// Greet message
 /// The only time we need to send the client a message actively is this roomlist msg.
 /// all other data sent to the client are *pong* parts.
-async fn client_welcome(my_id: &str) -> Result<(), Box<dyn std::error::Error>>  {
+async fn client_welcome(my_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let msg = json!([
         "roomlist",
         [], // TODO
@@ -86,15 +88,21 @@ async fn client_welcome(my_id: &str) -> Result<(), Box<dyn std::error::Error>>  
     Ok(())
 }
 /// Beware that client might send a invalid message
-async fn client_message(my_id: &str, msg: Message) -> Result<(), Box<dyn std::error::Error>> {
+async fn client_message(my_id: &str, msg: Message) -> Result<(), game::MessageHandleError> {
     let msg = if let Some(s) = msg.to_str() {
         s
     } else {
-        return Err(salvo::Error::new("invalid message type"));
+        return Err(game::MessageHandleError::InvalidMessageFormat(
+            "invalid body type".to_string(),
+        ));
     };
-    let parsed_msg: serde_json::Value = if let Ok(s) = serde_json::from_str(msg) { s } else {
-        tracing::warn!(my_id, "received invalid json");
-        return Ok(()); // current strategy is to forgive the mistake & resume the connection
+    let parsed_msg: serde_json::Value = if let Ok(s) = serde_json::from_str(msg) {
+        s
+    } else {
+        tracing::warn!(my_id, "invalid json");
+        return Err(game::MessageHandleError::InvalidMessageFormat(
+            "invalid json".to_string(),
+        ));
     };
     tracing::trace!(my_id, ?parsed_msg);
     game::handle_message(my_id, parsed_msg)
