@@ -84,7 +84,7 @@ async fn client_welcome(my_id: &str) -> Result<(), Box<dyn std::error::Error>> {
         [],
         my_id,
     ]);
-    ONLINE_CLIENTS.read().await.get(my_id).unwrap().send(msg)?;
+    ONLINE_CLIENTS.read().await.get(my_id).unwrap().send(&msg)?;
     Ok(())
 }
 /// Beware that client might send a invalid message
@@ -105,7 +105,7 @@ async fn client_message(my_id: &str, msg: Message) -> Result<(), game::MessageHa
         ));
     };
     tracing::trace!(my_id, ?parsed_msg);
-    game::handle_message(my_id, parsed_msg)
+    game::handle_message(my_id, parsed_msg).await
     // let new_msg = format!("<Client#{}>: {}", my_id, msg);
 
     // // New message from this client, send it to everyone else (except same uid)...

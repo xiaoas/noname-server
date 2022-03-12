@@ -19,6 +19,7 @@ pub struct Client {
 pub enum JoinedRoom {
     // implement -> Option<RwLock<Room>> ?
     None,
+    // owner ID instead of owner key!
     Guest(String),
     Owner(Room),
 }
@@ -48,7 +49,7 @@ impl Client {
             JoinedRoom::Owner(room) => Some(&room),
         }
     }
-    pub fn send(&self, msg: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn send(&self, msg: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
         let msg = msg.to_string();
         self.tx.send(Ok(Message::text(msg)))?;
         Ok(())
@@ -71,25 +72,36 @@ pub struct RoomConfig {
 
 pub async fn handle_message(id: &str, msg: Value) -> Result<(), MessageHandleError> {
     match msg {
-        Value::Array(args) => {
+        Value::Array(mut args) => {
             if let Some(Value::String(cmd)) = args.get(0) {
                 if cmd == "heartbeat" {
                     // we don't need heartbeat anymore
                     return Ok(());
                 }
-                if cmd == "key" {
+                if cmd == "server" && args.get(1) == Some(&Value::String("cmd".to_string())) {
                     return handlers::key(id, args).await;
                 }
-                // check key
-                if crate::ONLINE_CLIENTS
-                    .read()
-                    .await
-                    .get(id)
-                    .unwrap()
-                    .key
-                    .is_empty()
                 {
-                    return Err(MessageHandleError::Unauthorized);
+                    // check key
+                    let map = crate::ONLINE_CLIENTS.read().await;
+                    let c = map.get(id).unwrap();
+                    if c.key.is_empty() {
+                        return Err(MessageHandleError::Unauthorized);
+                    }
+                    if let JoinedRoom::Guest(owner_id) = &c.room {
+                        args.splice(
+                            0..0,
+                            [
+                                Value::String("onmessage".to_string()),
+                                Value::String(id.to_string()),
+                            ],
+                        );
+                        if let Some(Err(error)) = map.get(owner_id).map(|c| c.send(&Value::Array(args))) {
+                            tracing::error!(?error, "send onmessage fail");
+                            return Err(MessageHandleError::ServerError(error.to_string()));
+                        }
+                        return Ok(());
+                    }
                 }
 
                 todo!()
@@ -116,6 +128,9 @@ mod handlers {
         InvalidMessageFormat(String),
         #[error("client is not allowed to send this command")]
         Unauthorized,
+        
+        #[error("{0}")]
+        ServerError(String),
     }
     pub async fn key(id: &str, mut args: Vec<Value>) -> Result<(), MessageHandleError> {
         #[derive(Deserialize)]
