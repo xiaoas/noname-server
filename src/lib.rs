@@ -12,7 +12,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use salvo::extra::ws::{Message, WsHandler};
 use salvo::prelude::*;
 
-/// TODO: change to std::sync::RwLock for better performance (probably just a bit)
+/// change to std::sync::RwLock might push performance to its limit
 type Clients = RwLock<HashMap<String, game::Client>>;
 
 static ONLINE_CLIENTS: Lazy<Clients> = Lazy::new(|| Clients::default());
@@ -36,16 +36,17 @@ pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(
             // to the websocket
             let (tx, rx) = mpsc::unbounded_channel();
             let rx = UnboundedReceiverStream::new(rx);
-            let fut = rx.forward(client_ws_tx).map(|result| {
+            tokio::spawn(rx.forward(client_ws_tx).map(|result| {
                 if let Err(e) = result {
                     tracing::error!(error = ?e, "websocket send error");
                 }
-            });
-            tokio::spawn(fut);
+            }));
             let fut = async move {
-                ONLINE_CLIENTS.write().await.insert(my_id.clone(), tx);
-                client_welcome(&my_id).await;
-
+                ONLINE_CLIENTS.write().await.insert(my_id.clone(), game::Client::new(tx));
+                if let Err(error) = client_welcome(&my_id).await {
+                    tracing::warn!(?my_id, ?error, "client welcome error");
+                    return;
+                }
                 while let Some(result) = client_ws_rx.next().await {
                     let msg = match result {
                         Ok(msg) => msg,
@@ -54,8 +55,9 @@ pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(
                             break;
                         }
                     };
-                    if let Err(_) = client_message(&my_id, msg).await {
+                    if let Err(error) = client_message(&my_id, msg).await {
                         // client probably done somthing bad...
+                        tracing::warn!(?my_id, ?error, "client message error");
                         break;
                     }
                 }
@@ -80,30 +82,22 @@ async fn client_welcome(my_id: &str) -> Result<(), Box<dyn std::error::Error>>  
         [],
         my_id,
     ]);
-    let msg = msg.to_string();
-    ONLINE_CLIENTS.read().await.get(my_id).unwrap().send(Ok(Message::text(msg)))?;
+    ONLINE_CLIENTS.read().await.get(my_id).unwrap().send(msg)?;
     Ok(())
 }
 /// Beware that client might send a invalid message
-async fn client_message(my_id: &str, msg: Message) -> salvo::Result<()> {
+async fn client_message(my_id: &str, msg: Message) -> Result<(), Box<dyn std::error::Error>> {
     let msg = if let Some(s) = msg.to_str() {
         s
     } else {
         return Err(salvo::Error::new("invalid message type"));
     };
-    let parsed_msg: Vec<String> = if let Ok(s) = serde_json::from_str(msg) { s } else {
-        tracing::warn!(my_id, "received invalid msg");
+    let parsed_msg: serde_json::Value = if let Ok(s) = serde_json::from_str(msg) { s } else {
+        tracing::warn!(my_id, "received invalid json");
         return Ok(()); // current strategy is to forgive the mistake & resume the connection
     };
     tracing::trace!(my_id, ?parsed_msg);
-    match parsed_msg.get(0).map(|x| &x[..]) {
-        None => return Err(salvo::Error::new("invalid empty msg")),
-        Some("valid message") => todo!(),
-        Some(msg_name) => {
-            tracing::warn!(my_id, msg_name, "received invalid msg");
-            return Err(salvo::Error::new("invalid msg"));
-        },
-    }
+    game::handle_message(my_id, parsed_msg)
     // let new_msg = format!("<Client#{}>: {}", my_id, msg);
 
     // // New message from this client, send it to everyone else (except same uid)...
