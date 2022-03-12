@@ -1,8 +1,11 @@
 use std::{sync::{Arc, Weak}, collections::{HashSet, HashMap}};
 use serde::{Serialize, Deserialize};
+use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use salvo::extra::ws::Message;
 use serde_json::Value;
+
+pub use handlers::MessageHandleError;
 pub struct Client {
     pub tx: mpsc::UnboundedSender<Result<Message, salvo::Error>>,
     /// key given when init
@@ -65,9 +68,41 @@ pub struct RoomConfig {
     pub observe_ready: bool,
 }
 
-pub fn handle_message(id: &str, msg: Value) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_message(id: &str, msg: Value) -> Result<(), MessageHandleError> {
     match msg {
-        Value::Array()
-        _: 
+        Value::Array(args) => {
+            if let Some(Value::String(cmd)) = args.get(0) {
+                if cmd == "heartbeat" { // we don't need heartbeat anymore
+                    return Ok(())
+                }
+                if cmd == "key" {
+                    return handlers::key(id, &args[1..]).await;
+                }
+                 // check key
+                if super::ONLINE_CLIENTS.read().await.get(id).unwrap().key == "" {
+                    return Err(MessageHandleError::Unauthorized);
+                }
+                
+                todo!()
+            } else {
+                Err(MessageHandleError::InvalidMessageFormat("message command is expected".to_string()))
+            }
+        },
+        _ => Err(MessageHandleError::InvalidMessageFormat("Top level Array is expected".to_string())),
+    }
+}
+
+mod handlers {
+    use serde_json::Value;
+
+    #[derive(Error, Debug)]
+    pub enum MessageHandleError {
+        #[error("message has format issues: `{0}`")]
+        InvalidMessageFormat(String),
+        #[error("client is not allowed to send this command")]
+        Unauthorized,
+    }
+    pub async fn key(id: &str, args: &[Value]) -> Result<(), super::MessageHandleError> {
+        todo!()
     }
 }
