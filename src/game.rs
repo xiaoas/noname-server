@@ -88,23 +88,41 @@ pub async fn handle_message(id: &str, msg: Value) -> Result<(), MessageHandleErr
                     if c.key.is_empty() {
                         return Err(MessageHandleError::Unauthorized);
                     }
-                    if let JoinedRoom::Guest(owner_id) = &c.room {
-                        args.splice(
-                            0..0,
-                            [
-                                Value::String("onmessage".to_string()),
-                                Value::String(id.to_string()),
-                            ],
-                        );
-                        if let Some(Err(error)) = map.get(owner_id).map(|c| c.send(&Value::Array(args))) {
-                            tracing::error!(?error, "send onmessage fail");
-                            return Err(MessageHandleError::ServerError(error.to_string()));
-                        }
-                        return Ok(());
+                }
+                // has owner: directly forward with onmessage
+                if let JoinedRoom::Guest(owner_id) = &c.room {
+                    args.splice(
+                        0..0,
+                        [
+                            Value::String("onmessage".to_string()),
+                            Value::String(id.to_string()),
+                        ],
+                    );
+                    if let Some(Err(error)) = map.get(owner_id).map(|c| c.send(&Value::Array(args))) {
+                        tracing::error!(?error, "send onmessage fail");
+                        return Err(MessageHandleError::ServerError(error.to_string()));
+                    }
+                    return Ok(());
+                }
+                if (cmd == "server") {
+                    Err(MessageHandleError::InvalidMessageFormat(
+                        "message command should start with server".to_string(),
+                    ))
+                } else {
+                    let cmd = if let Some(Value::String(cmd)) = args.get(1) {
+                        cmd
+                    } else {
+                        return Err(MessageHandleError::InvalidMessageFormat(
+                            "message command invalid".to_string(),
+                        ))
+                    };
+                    match cmd {
+                        "create" => handlers::create(id, args),
+                        _ => Err(MessageHandleError::InvalidMessageFormat(
+                            "message command invalid".to_string(),
+                        ))
                     }
                 }
-
-                todo!()
             } else {
                 Err(MessageHandleError::InvalidMessageFormat(
                     "message command is expected".to_string(),
@@ -118,10 +136,12 @@ pub async fn handle_message(id: &str, msg: Value) -> Result<(), MessageHandleErr
 }
 
 mod handlers {
+    use std::collections::HashMap;
+
+    use once_cell::sync::Lazy;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use thiserror::Error;
-
     #[derive(Error, Debug)]
     pub enum MessageHandleError {
         #[error("message has format issues: `{0}`")]
@@ -132,6 +152,10 @@ mod handlers {
         #[error("{0}")]
         ServerError(String),
     }
+    // pub static MESSAGE_HANDLERS: Lazy<HashMap<&str, fn(&str, Vec<Value>) -> Result<Value, MessageHandleError>>> =
+    // Lazy::new(|| HashMap::from([
+    //     ("create", create),
+    // ]));
     pub async fn key(id: &str, mut args: Vec<Value>) -> Result<(), MessageHandleError> {
         #[derive(Deserialize)]
         struct Arg1([String; 2]);
@@ -148,5 +172,12 @@ mod handlers {
         Err(MessageHandleError::InvalidMessageFormat(
             "invalid key args".to_string(),
         ))
+    }
+    pub async fn create(id: &str, args: Vec<Value>) -> Result<Value, MessageHandleError> {
+        #[derive(Deserialize)]
+        struct Args(String, String, String, String, String, Option<String>, Option<String>);
+        let Args(_, _, key,nickname,avatar,config,mode) = serde_json::from_value(Value::Array(args))
+        .map_err(|err| MessageHandleError::InvalidMessageFormat(err.to_string()))?;
+        todo!()
     }
 }
