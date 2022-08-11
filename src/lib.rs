@@ -1,13 +1,11 @@
 pub mod game;
 use std::collections::HashMap;
-
 use futures_util::{FutureExt, StreamExt};
 use once_cell::sync::Lazy;
 use rand::distributions::{Distribution, Uniform};
 use serde_json::json;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-
 use salvo::extra::ws::{Message, WsHandler};
 use salvo::prelude::*;
 
@@ -18,8 +16,8 @@ static ONLINE_CLIENTS: Lazy<Clients> = Lazy::new(|| Clients::default());
 static ID_SAMPLE_RANGE: Lazy<Uniform<usize>> =
     Lazy::new(|| Uniform::from(1_000_000_000..10_000_000_000));
 
-#[fn_handler]
-pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(), HttpError> {
+#[handler]
+pub async fn client_connected(req: &mut Request, res: &mut Response) -> Result<(), StatusError> {
     let fut = WsHandler::new().handle(req, res)?;
     let fut = async move {
         if let Some(ws) = fut.await {
